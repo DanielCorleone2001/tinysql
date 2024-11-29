@@ -62,12 +62,18 @@ func appendTableRecordPrefix(buf []byte, tableID int64) []byte {
 }
 
 // EncodeRowKeyWithHandle encodes the table id, row handle into a kv.Key
+// 1            8        2               8
+// tablePrefix_tableID_recordPrefixSep_rowID
 func EncodeRowKeyWithHandle(tableID int64, handle int64) kv.Key {
 	buf := make([]byte, 0, RecordRowKeyLen)
 	buf = appendTableRecordPrefix(buf, tableID)
 	buf = codec.EncodeInt(buf, handle)
 	return buf
 }
+
+const (
+	lenInt64Bytes = 8 // int64位的字节数
+)
 
 // DecodeRecordKey decodes the key and gets the tableID, handle.
 func DecodeRecordKey(key kv.Key) (tableID int64, handle int64, err error) {
@@ -98,6 +104,22 @@ func DecodeRecordKey(key kv.Key) (tableID int64, handle int64, err error) {
 	 *   5. understanding the coding rules is a prerequisite for implementing this function,
 	 *      you can learn it in the projection 1-2 course documentation.
 	 */
+	if len(key) != RecordRowKeyLen {
+		return 0, 0,
+			errInvalidRecordKey.GenWithStack("key len is invalid,key:%s", string(key))
+	}
+	if key[0] != tablePrefix[0] {
+		return 0, 0,
+			errInvalidRecordKey.GenWithStack("key tablePrefix is invalid,pre:%s", key[0])
+	}
+	if key[prefixLen-2] != recordPrefixSep[0] || key[prefixLen-1] != recordPrefixSep[1] {
+		return 0, 0,
+			errInvalidRecordKey.GenWithStack(
+				"key recordPrefixSep is invalid,pre:%s,%s", key[prefixLen-2], key[prefixLen-1])
+	}
+
+	tableID = codec.DecodeCmpUintToInt(binary.BigEndian.Uint64(key[len(tablePrefix) : len(tablePrefix)+lenInt64Bytes]))
+	handle = codec.DecodeCmpUintToInt(binary.BigEndian.Uint64(key[prefixLen:]))
 	return
 }
 
@@ -110,6 +132,9 @@ func appendTableIndexPrefix(buf []byte, tableID int64) []byte {
 }
 
 // EncodeIndexSeekKey encodes an index value to kv.Key.
+// 1             8       2              8
+// tablePrefix_tableID_indexPrefixSep_indexID_indexColumnsValue
+// tablePrefix_tableID_indexPrefixSep_indexID_ColumnsValue_rowID
 func EncodeIndexSeekKey(tableID int64, idxID int64, encodedValue []byte) kv.Key {
 	key := make([]byte, 0, prefixLen+idLen+len(encodedValue))
 	key = appendTableIndexPrefix(key, tableID)
@@ -148,6 +173,26 @@ func DecodeIndexKeyPrefix(key kv.Key) (tableID int64, indexID int64, indexValues
 	 *   5. understanding the coding rules is a prerequisite for implementing this function,
 	 *      you can learn it in the projection 1-2 course documentation.
 	 */
+	if len(key) < prefixLen+idLen {
+		return 0, 0, nil, errInvalidIndexKey.GenWithStack("index key len is lq than min len,key:%s", key)
+	}
+
+	if key[0] != tablePrefix[0] {
+		return 0, 0, nil,
+			errInvalidIndexKey.GenWithStack("index key tablePrefix is invalid,pre:%s", key[0])
+	}
+
+	if key[prefixLen-2] != indexPrefixSep[0] || key[prefixLen-1] != indexPrefixSep[1] {
+		return 0, 0, nil,
+			errInvalidRecordKey.GenWithStack(
+				"index key indexPrefixSep is invalid,pre:%s,%s", key[prefixLen-2], key[prefixLen-1])
+	}
+
+	tableID = codec.DecodeCmpUintToInt(binary.BigEndian.Uint64(key[len(tablePrefix) : len(tablePrefix)+lenInt64Bytes]))
+	indexID = codec.DecodeCmpUintToInt(binary.BigEndian.Uint64(key[prefixLen : prefixLen+lenInt64Bytes]))
+	if len(key) > prefixLen+lenInt64Bytes {
+		indexValues = key[prefixLen+lenInt64Bytes:]
+	}
 	return tableID, indexID, indexValues, nil
 }
 
